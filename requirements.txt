@@ -1,0 +1,7 @@
+pykis
+pymysql
+sqlalchemy
+pandas
+tensorflow
+scikit-learn
+schedule
