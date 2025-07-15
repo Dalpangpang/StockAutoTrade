@@ -1,7 +1,7 @@
 import configparser
 import schedule
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import pandas as pd
 import logging
 
@@ -20,66 +20,78 @@ def _is_domestic(ticker):
 
 def collect_data_job(db, api, tickers):
     """일봉과 분봉 데이터를 모두 수집하여 각 테이블에 저장하는 함수"""
-    logger.info("데이터 수집 작업 시작...")
+    logger.info("=" * 50)
+    logger.info(f"데이터 수집 작업 시작: {datetime.now()}")
+    logger.info("=" * 50)
     for ticker in tickers:
         try:
-            # 1. 분봉 데이터 수집
+            logger.info(f"--- '{ticker}' 종목 처리 시작 ---")
+
+            # 1. 분봉 데이터 수집 (오늘 하루 데이터만 수집/업데이트)
             table_min = 'stock_data_min'
             last_ts_min = db.get_last_timestamp(ticker, table_min)
+            logger.info(f"'{ticker}' 분봉 DB 마지막 시간: {last_ts_min}")
 
-            # 마지막 데이터가 없으면(최초 수집), 5년 전부터 데이터 수집 시작 (API 한도 고려)
-            start_time = None
-            if _is_domestic(ticker):
-                start_time = last_ts_min + timedelta(minutes=1) if last_ts_min else datetime.now() - timedelta(
-                    days=365 * 5)
+            start_to_fetch = None
+            if last_ts_min and last_ts_min.date() == date.today():
+                start_to_fetch = last_ts_min
 
-            chart_min = api.get_day_chart(ticker, start_time=start_time)
+            chart_min = api.get_day_chart(ticker, start=start_to_fetch)
+            time.sleep(0.5)
+
             if chart_min and chart_min.bars:
-                data_min = [{'ticker': ticker, 'timestamp': b.time, 'open': b.open, 'high': b.high, 'low': b.low,
-                             'close': b.close, 'volume': b.volume, 'trading_value': b.amount} for b in chart_min.bars]
-                df_min = pd.DataFrame(data_min)
+                df_api = pd.DataFrame([{'ticker': ticker, 'timestamp': b.time, 'open': b.open, 'high': b.high,
+                                        'low': b.low, 'close': b.close, 'volume': b.volume, 'trading_value': b.amount}
+                                       for b in chart_min.bars])
+                if not df_api.empty:
+                    if pd.api.types.is_datetime64_any_dtype(df_api['timestamp']) and df_api[
+                        'timestamp'].dt.tz is not None:
+                        df_api['timestamp'] = df_api['timestamp'].dt.tz_localize(None)
 
-                if last_ts_min: df_min = df_min[df_min['timestamp'] > last_ts_min]
+                    df_db = db.get_last_n_rows(ticker, table_min, n=40)
+                    df_combined = pd.concat([df_db, df_api]).drop_duplicates(subset=['timestamp'],
+                                                                             keep='last').sort_values(
+                        by='timestamp').reset_index(drop=True)
+                    df_with_indicators = calculate_indicators(df_combined)
 
-                if not df_min.empty:
-                    df_min = calculate_indicators(df_min)
-                    # [개선] 보조지표 계산 시 발생하는 초기 NaN 값 제거
-                    df_min.dropna(inplace=True)
-                    db.insert_data(df_min, table_min)
-                    logger.info(f"'{ticker}': 분봉 {len(df_min)}개 신규 데이터 저장")
+                    if last_ts_min:
+                        df_to_insert = df_with_indicators[df_with_indicators['timestamp'] > last_ts_min].copy()
+                    else:
+                        df_to_insert = df_with_indicators.copy()
+
+                    logger.info(f"'{ticker}' 저장할 신규 분봉 데이터 개수: {len(df_to_insert)}")
+
+                    if not df_to_insert.empty:
+                        db.insert_data(df_to_insert.dropna(), table_min)
+                        logger.info(f"'{ticker}': 분봉 {len(df_to_insert)}개 신규 데이터 저장 완료")
 
             # 2. 일봉 데이터 수집
             table_day = 'stock_data_day'
             last_ts_day = db.get_last_timestamp(ticker, table_day)
+            logger.info(f"'{ticker}' 일봉 DB 마지막 시간: {last_ts_day}")
+            start_date_day = (last_ts_day + timedelta(days=1)).date() if last_ts_day else date(1980, 1, 1)
 
-            # [개선] 마지막 데이터가 없으면(최초 수집), 1980년부터 조회하여 상장일 부터 모든 데이터 확보
-            start_date = (last_ts_day + timedelta(days=1)).date() if last_ts_day else datetime(1980, 1, 1).date()
+            if start_date_day <= date.today():
+                chart_day = api.get_daily_chart(ticker, start_date=start_date_day)
+                time.sleep(0.5)
+                if chart_day and chart_day.bars:
+                    df_api_day = pd.DataFrame([{'ticker': ticker, 'timestamp': b.time, 'open': b.open, 'high': b.high,
+                                                'low': b.low, 'close': b.close, 'volume': b.volume,
+                                                'trading_value': b.amount} for b in chart_day.bars])
+                    if not df_api_day.empty:
+                        df_with_day_indicators = calculate_indicators(df_api_day)
+                        db.insert_data(df_with_day_indicators.dropna(), table_day)
+                        logger.info(f"'{ticker}': 일봉 {len(df_with_day_indicators)}개 신규 데이터 저장 완료")
 
-            chart_day = api.get_daily_chart(ticker, start_date=start_date)
-            if chart_day and chart_day.bars:
-                data_day = [{'ticker': ticker, 'timestamp': b.time, 'open': b.open, 'high': b.high, 'low': b.low,
-                             'close': b.close, 'volume': b.volume, 'trading_value': b.amount} for b in chart_day.bars]
-                df_day = pd.DataFrame(data_day)
-
-                if last_ts_day: df_day = df_day[df_day['timestamp'] > last_ts_day]
-
-                if not df_day.empty:
-                    df_day = calculate_indicators(df_day)
-                    # [개선] 보조지표 계산 시 발생하는 초기 NaN 값 제거
-                    df_day.dropna(inplace=True)
-                    db.insert_data(df_day, table_day)
-                    logger.info(f"'{ticker}': 일봉 {len(df_day)}개 신규 데이터 저장")
+            logger.info(f"--- '{ticker}' 종목 처리 완료 ---\n")
 
         except Exception as e:
-            if "Duplicate entry" not in str(e):
-                logger.error(f"'{ticker}' 데이터 수집 중 오류 발생: {e}", exc_info=True)
+            logger.error(f"'{ticker}' 데이터 수집 중 오류 발생: {e}", exc_info=True)
 
 
 def main():
-    """메인 실행 함수"""
     global logger
     logger = setup_logger()
-
     try:
         config = configparser.ConfigParser()
         config.read('config.ini', encoding='utf-8')
@@ -87,7 +99,6 @@ def main():
         db_handler = DBHandler(config['DATABASE'])
         kis_api = KISApi(config['API'])
 
-        # [개선] 설정 파일에서 국내/해외 종목 코드를 별도로 읽어와서 통합
         domestic_tickers = config['TRADING'].get('domestic_tickers', '').split(',')
         overseas_tickers = config['TRADING'].get('overseas_tickers', '').split(',')
         tickers = [t.strip() for t in domestic_tickers + overseas_tickers if t.strip()]
@@ -98,10 +109,11 @@ def main():
 
         run_mode = config['TRADING'].get('run_mode', 'collect')
 
-        # 데이터 수집 스케줄 등록 (항상 실행)
+        # [수정] db -> db_handler 로 변수명 수정
         schedule.every(1).minutes.do(collect_data_job, db_handler, kis_api, tickers)
 
         logger.info("초기 데이터 수집을 시작합니다.")
+        # [수정] db -> db_handler 로 변수명 수정
         collect_data_job(db_handler, kis_api, tickers)
 
         if run_mode == 'train':
@@ -112,7 +124,7 @@ def main():
             logger.info("자동 매매/알림 모드로 실행합니다.")
             trader = Trader(kis_api, db_handler, config['TRADING'])
             schedule.every(5).minutes.do(trader.run)
-        else:  # collect 모드
+        else:
             logger.info("데이터 수집 모드로 실행합니다.")
 
         logger.info(f"'{run_mode}' 모드 설정 완료. 데이터 수집은 1분마다 주기적으로 실행됩니다.")

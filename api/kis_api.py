@@ -1,5 +1,7 @@
 from pykis import PyKis, KisAuth
 import logging
+from datetime import datetime, date
+
 
 class KISApi:
     def __init__(self, config):
@@ -28,11 +30,20 @@ class KISApi:
             self.logger.error(f"'{ticker}' 일봉 데이터 조회 실패: {e}")
             return None
 
-    def get_day_chart(self, ticker, start_time=None, end_time=None):
-        """분봉 데이터를 가져옵니다."""
+    def get_day_chart(self, ticker, start=None):
+        """
+        '오늘'의 분봉 데이터를 가져옵니다.
+        start가 지정되면 해당 시간부터 조회합니다. (과거 날짜 조회 불가)
+        """
         try:
             stock = self.kis.stock(ticker)
-            return stock.day_chart(start=start_time, end=end_time)
+            param_to_pass = start
+
+            # pykis의 day_chart는 'time' 객체만 인자로 받으므로 변환
+            if start and isinstance(start, datetime):
+                param_to_pass = start.time()
+
+            return stock.day_chart(start=param_to_pass)
         except Exception as e:
             self.logger.error(f"'{ticker}' 분봉 데이터 조회 실패: {e}")
             return None

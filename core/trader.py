@@ -5,23 +5,28 @@ from datetime import datetime
 import logging
 import os
 
+
 class Trader:
     def __init__(self, kis_api, db_handler, config):
         self.kis_api = kis_api
         self.db_handler = db_handler
         self.config = config
         self.logger = logging.getLogger(__name__)
+
+        domestic_tickers = self.config.get('domestic_tickers', '').split(',')
+        overseas_tickers = self.config.get('overseas_tickers', '').split(',')
+        self.tickers = [t.strip() for t in domestic_tickers + overseas_tickers if t.strip()]
+
         self.models = self._load_models()
         self.threshold = float(self.config['prediction_threshold'])
 
     def _load_models(self):
         """설정에 맞는 학습된 모델들을 불러옵니다."""
         models = {}
-        tickers = self.config['tickers'].split(',')
         mode = self.config.get('mode', 'short')
         model_version = f"v1.0_{mode}"
-        
-        for ticker in tickers:
+
+        for ticker in self.tickers:
             actor_path = f"models/actor_{ticker}_{model_version}.h5"
             if os.path.exists(actor_path):
                 models[ticker] = tf.keras.models.load_model(actor_path)
@@ -33,17 +38,16 @@ class Trader:
 
     def run(self):
         """매매 분석 및 실행/알림 로직을 수행합니다."""
-        tickers = self.config['tickers'].split(',')
         mode = self.config['mode']
 
-        for ticker in tickers:
+        for ticker in self.tickers:
             model = self.models.get(ticker)
             if not model:
                 self.logger.warning(f"'{ticker}' 모델이 없어 분석을 건너뜁니다.")
                 continue
 
             self.logger.info(f"--- {ticker} ({mode} 모드) 매매 분석 시작 ---")
-            
+
             try:
                 # API를 통해 최신 시세 데이터 조회
                 chart = self.kis_api.get_day_chart(ticker) if mode == 'short' else self.kis_api.get_daily_chart(ticker)
@@ -52,7 +56,7 @@ class Trader:
                     continue
 
                 # ... (데이터 전처리 및 모델 예측 로직) ...
-                
+
                 # 임시 로직
                 recommendation, probability = np.random.randint(0, 3), np.random.uniform(70, 95)
 
@@ -66,7 +70,7 @@ class Trader:
 
     def _log_recommendation(self, ticker, rec_type, probability):
         """추천 내역을 데이터베이스에 기록합니다."""
-        pass # DB 저장 로직 구현
+        pass  # DB 저장 로직 구현
 
     def _execute_trade(self, ticker, rec_type):
         """실제 매매를 실행하는 함수 (2단계 기능, 주석처리)"""

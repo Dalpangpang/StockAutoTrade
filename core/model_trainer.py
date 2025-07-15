@@ -6,18 +6,23 @@ import logging
 from sklearn.preprocessing import MinMaxScaler
 import os
 
+
 class ModelTrainer:
     def __init__(self, db_handler, config):
         self.db_handler = db_handler
         self.config = config
         self.logger = logging.getLogger(__name__)
 
+        domestic_tickers = self.config.get('domestic_tickers', '').split(',')
+        overseas_tickers = self.config.get('overseas_tickers', '').split(',')
+        self.tickers = [t.strip() for t in domestic_tickers + overseas_tickers if t.strip()]
+
     def _get_data(self, ticker):
         """데이터베이스에서 학습 데이터를 불러옵니다."""
         mode = self.config.get('mode', 'short')
         table_name = 'stock_data_min' if mode == 'short' else 'stock_data_day'
         self.logger.info(f"'{ticker}' 종목의 학습 데이터를 '{table_name}' 테이블에서 불러옵니다.")
-        
+
         query = f"SELECT * FROM {table_name} WHERE ticker = '{ticker}' ORDER BY timestamp"
         try:
             df = pd.read_sql(query, self.db_handler.engine)
@@ -33,17 +38,17 @@ class ModelTrainer:
             'open', 'high', 'low', 'close', 'volume', 'trading_value', 'vwap',
             'ma5', 'ma20', 'rsi', 'macd', 'bollinger_upper', 'bollinger_lower'
         ]
-        
+
         feature_cols = [f for f in features if f in df.columns]
         df = df[feature_cols].copy()
         df.dropna(inplace=True)
-        
+
         if df.empty:
             return pd.DataFrame()
 
         scaler = MinMaxScaler()
         df_scaled = pd.DataFrame(scaler.fit_transform(df), columns=df.columns)
-        
+
         self.logger.info("데이터 전처리 완료")
         return df_scaled
 
@@ -65,36 +70,35 @@ class ModelTrainer:
 
     def train(self):
         """모델 학습을 실행합니다."""
-        tickers = self.config['tickers'].split(',')
         mode = self.config.get('mode', 'short')
         model_version = f"v1.0_{mode}"
 
         if not os.path.exists('models'):
             os.makedirs('models')
 
-        for ticker in tickers:
+        for ticker in self.tickers:
             self.logger.info(f"'{ticker}' 종목 ({mode} 모드) 모델 학습 시작...")
             df = self._get_data(ticker)
-            
+
             if df.empty or len(df) < 100:
                 self.logger.warning(f"'{ticker}' 학습 데이터 부족 (100개 미만). 학습을 건너뜁니다.")
                 continue
 
             df_processed = self._preprocess(df)
-            
+
             if df_processed.empty:
                 self.logger.warning(f"'{ticker}' 전처리 후 데이터 없음. 학습을 건너뜁니다.")
                 continue
-            
+
             states = df_processed.values
-            num_actions = 3 # Buy, Sell, Hold
+            num_actions = 3  # Buy, Sell, Hold
 
             actor, critic = self._build_ppo_model(input_shape=(states.shape[1],), num_actions=num_actions)
-            
+
             self.logger.info("PPO 알고리즘 학습 시작 (개념적)...")
             # ... 실제 PPO 학습 로직 ...
             self.logger.info(f"'{ticker}' 종목 모델 학습 완료 (개념적).")
-        
+
             actor_path = f"models/actor_{ticker}_{model_version}.h5"
             critic_path = f"models/critic_{ticker}_{model_version}.h5"
             actor.save(actor_path)

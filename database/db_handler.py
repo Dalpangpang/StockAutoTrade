@@ -20,7 +20,8 @@ class DBHandler:
                 password=self.config['password'],
                 db=self.config['database'],
                 port=int(self.config['port']),
-                charset='utf8mb4'
+                charset='utf8mb4',
+                cursorclass=pymysql.cursors.DictCursor # 결과를 딕셔너리로 받기 위해 추가
             )
             self.engine = create_engine(
                 f"mysql+pymysql://{self.config['user']}:{self.config['password']}@{self.config['host']}:{self.config['port']}/{self.config['database']}"
@@ -47,7 +48,21 @@ class DBHandler:
             with self.conn.cursor() as cursor:
                 cursor.execute(query, (ticker,))
                 result = cursor.fetchone()
-                return result[0] if result and result[0] else None
+                # 딕셔너리에서 값 추출
+                return result['MAX(timestamp)'] if result and result['MAX(timestamp)'] else None
         except pymysql.Error as e:
             self.logger.error(f"{table_name}에서 마지막 타임스탬프 조회 실패: {e}")
             return None
+
+    def get_last_n_rows(self, ticker, table_name, n=40):
+        """특정 테이블에서 종목의 마지막 N개 데이터를 조회하여 시간순으로 정렬된 DataFrame을 반환합니다."""
+        query = f"(SELECT * FROM {table_name} WHERE ticker = %s ORDER BY timestamp DESC LIMIT %s)"
+        try:
+            # SQLAlchemy engine을 사용하여 데이터를 읽고, 시간순으로 다시 정렬
+            df = pd.read_sql(query, self.engine, params=(ticker, n))
+            if not df.empty:
+                return df.sort_values(by='timestamp', ascending=True)
+            return pd.DataFrame()
+        except Exception as e:
+            self.logger.error(f"{table_name}에서 마지막 {n}개 데이터 조회 실패: {e}")
+            return pd.DataFrame()
